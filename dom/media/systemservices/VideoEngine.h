@@ -63,7 +63,8 @@ class VideoEngine {
   NS_INLINE_DECL_REFCOUNTING(VideoEngine)
 
   static already_AddRefed<VideoEngine> Create(
-      const CaptureDeviceType& aCaptureDeviceType);
+      const CaptureDeviceType& aCaptureDeviceType,
+      webrtc::VideoCaptureOptions* aOptions = nullptr);
 #if defined(ANDROID)
   static int SetAndroidObjects();
 #endif
@@ -72,8 +73,7 @@ class VideoEngine {
    *   This option is currently used only with PipeWire implementation and
    *   provides access to PipeWire remote for which we were granted permissions.
    */
-  int32_t CreateVideoCapture(const char* aDeviceUniqueIdUTF8,
-                             webrtc::VideoCaptureOptions* aOptions = nullptr);
+  int32_t CreateVideoCapture(const char* aDeviceUniqueIdUTF8);
 
   int ReleaseVideoCapture(const int32_t aId);
 
@@ -93,8 +93,7 @@ class VideoEngine {
    *   @see bug 1305212 https://bugzilla.mozilla.org/show_bug.cgi?id=1305212
    */
   std::shared_ptr<webrtc::VideoCaptureModule::DeviceInfo>
-  GetOrCreateVideoCaptureDeviceInfo(
-      webrtc::VideoCaptureOptions* aOptions = nullptr);
+  GetOrCreateVideoCaptureDeviceInfo();
 
   class CaptureEntry {
    public:
@@ -114,9 +113,11 @@ class VideoEngine {
                  const std::function<void(CaptureEntry& entry)>&& fn);
 
  private:
-  explicit VideoEngine(const CaptureDeviceType& aCaptureDeviceType);
+  explicit VideoEngine(const CaptureDeviceType& aCaptureDeviceType,
+                       webrtc::VideoCaptureOptions* aOptions);
   int32_t mId;
   const CaptureDeviceInfo mCaptureDevInfo;
+  webrtc::VideoCaptureOptions* mOptions = nullptr;
   std::shared_ptr<webrtc::VideoCaptureModule::DeviceInfo> mDeviceInfo;
   std::map<int32_t, CaptureEntry> mCaps;
   std::map<int32_t, int32_t> mIdMap;

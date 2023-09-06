@@ -858,7 +858,8 @@ NS_IMPL_ISUPPORTS(LocalMediaDevice, nsIMediaDevice)
 MediaDevice::MediaDevice(MediaEngine* aEngine, MediaSourceEnum aMediaSource,
                          const nsString& aRawName, const nsString& aRawID,
                          const nsString& aRawGroupID, IsScary aIsScary,
-                         const OsPromptable canRequestOsLevelPrompt)
+                         const OsPromptable canRequestOsLevelPrompt,
+                         const bool aIsPlaceholder)
     : mEngine(aEngine),
       mAudioDeviceInfo(nullptr),
       mMediaSource(aMediaSource),
@@ -868,6 +869,7 @@ MediaDevice::MediaDevice(MediaEngine* aEngine, MediaSourceEnum aMediaSource,
       mScary(aIsScary == IsScary::Yes),
       mCanRequestOsLevelPrompt(canRequestOsLevelPrompt == OsPromptable::Yes),
       mIsFake(mEngine->IsFake()),
+      mIsPlaceholder(aIsPlaceholder),
       mType(
           NS_ConvertASCIItoUTF16(dom::MediaDeviceKindValues::GetString(mKind))),
       mRawID(aRawID),
@@ -890,6 +892,7 @@ MediaDevice::MediaDevice(MediaEngine* aEngine,
       mScary(false),
       mCanRequestOsLevelPrompt(false),
       mIsFake(false),
+      mIsPlaceholder(false),
       mType(
           NS_ConvertASCIItoUTF16(dom::MediaDeviceKindValues::GetString(mKind))),
       mRawID(aRawID),
@@ -900,10 +903,10 @@ MediaDevice::MediaDevice(MediaEngine* aEngine,
 RefPtr<MediaDevice> MediaDevice::CopyWithNewRawGroupId(
     const RefPtr<MediaDevice>& aOther, const nsString& aRawGroupID) {
   MOZ_ASSERT(!aOther->mAudioDeviceInfo, "device not supported");
-  return new MediaDevice(aOther->mEngine, aOther->mMediaSource,
-                         aOther->mRawName, aOther->mRawID, aRawGroupID,
-                         IsScary(aOther->mScary),
-                         OsPromptable(aOther->mCanRequestOsLevelPrompt));
+  return new MediaDevice(
+      aOther->mEngine, aOther->mMediaSource, aOther->mRawName, aOther->mRawID,
+      aRawGroupID, IsScary(aOther->mScary),
+      OsPromptable(aOther->mCanRequestOsLevelPrompt), aOther->mIsPlaceholder);
 }
 
 MediaDevice::~MediaDevice() = default;
@@ -3006,6 +3009,14 @@ RefPtr<LocalDeviceSetPromise> MediaManager::EnumerateDevicesImpl(
   // window listener doesn't clean itself up until we're done.
   auto placeholderListener = MakeRefPtr<DeviceListener>();
   windowListener->Register(placeholderListener);
+
+  // Clear the list in case there is a placeholder
+  for (const auto& device : *mPhysicalDevices) {
+    if (device->mIsPlaceholder) {
+      mPhysicalDevices = nullptr;
+      break;
+    }
+  }
 
   return EnumerateRawDevices(aVideoInputType, aAudioInputType, aFlags)
       ->Then(

@@ -4,15 +4,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-#ifndef WEBRTC_MODULES_VIDEO_CAPTURE_PIPEWIRE_CAMERA_IMPL_H_
-#define WEBRTC_MODULES_VIDEO_CAPTURE_PIPEWIRE_CAMERA_IMPL_H_
+#ifndef WEBRTC_MODULES_VIDEO_CAPTURE_IMPL_H_
+#define WEBRTC_MODULES_VIDEO_CAPTURE_IMPL_H_
 
-#include "modules/video_capture/linux/camera_portal.h"
+#if defined(WEBRTC_USE_PIPEWIRE)
+#  include "modules/video_capture/linux/camera_portal.h"
+#endif
+
 #include "modules/video_capture/video_capture_options.h"
 
 #include "mozilla/MozPromise.h"
 
 namespace mozilla {
+
+#if defined(WEBRTC_USE_PIPEWIRE)
 /**
  * Implementation of webrtc::CameraPortal.
  *
@@ -40,6 +45,8 @@ class CameraPortalImpl : public webrtc::CameraPortal::PortalNotifier {
    */
   RefPtr<CameraPortalPromise> Start();
 
+  static RefPtr<CameraPortalPromise> HasCameraDevice();
+
  private:
   ~CameraPortalImpl() = default;
   void OnCameraRequestResult(webrtc::xdg_portal::RequestResponse result,
@@ -48,6 +55,7 @@ class CameraPortalImpl : public webrtc::CameraPortal::PortalNotifier {
   std::unique_ptr<webrtc::CameraPortal> mPortal = nullptr;
   MozPromiseHolder<CameraPortalPromise> mPromiseHolder;
 };
+#endif
 
 /**
  * Implementation of webrtc::VideoCaptureOptions.
@@ -64,8 +72,9 @@ class VideoCaptureOptionsImpl : webrtc::VideoCaptureOptions::Callback {
 
   VideoCaptureOptionsImpl();
 
-  using VideoCaptureOptionsInitPromise = MozPromise<nsresult, nsresult, true>;
+  using VideoCaptureOptionsInitPromise = MozPromise<nsresult, nsresult, false>;
 
+#if defined(WEBRTC_USE_PIPEWIRE)
   /**
    * Request to initialize PipeWire session in order to get list of devices.
    *
@@ -76,21 +85,43 @@ class VideoCaptureOptionsImpl : webrtc::VideoCaptureOptions::Callback {
    *  2) NS_ERROR_DOM_MEDIA_NOT_ALLOWED_ERR - camera access has been rejected
    *  3) NS_ERROR_FAILURE - generic error, usually a PipeWire failure
    */
-  RefPtr<VideoCaptureOptionsInitPromise> Init(int fd);
+  RefPtr<VideoCaptureOptionsInitPromise> InitPipeWire(int fd);
+#endif
 
   /**
-   * Returns and release webrtc::VideoCaptureOptions object we hold.
+   * Returns whether VideoCaptureOptions are fully initialized.
+   *
+   * It needs to be initialized when PipeWire is used, passing a file
+   * descriptor of PipeWire socket we can connect to. With V4L2 we don't need to
+   * initialize anything.
    */
-  std::unique_ptr<webrtc::VideoCaptureOptions> ReleaseOptions();
+  bool IsInitialized() const { return mInitialized; }
+
+#if defined(WEBRTC_USE_PIPEWIRE)
+  /**
+   * Returns whether there is a camera device present on the system using
+   * CameraPortal
+   *
+   * Currently used only when PipeWire is enabled.
+   */
+  bool HasCamera() const { return mHasCamera; }
+#endif
+
+  /**
+   * Returns webrtc::VideoCaptureOptions object we hold.
+   */
+  webrtc::VideoCaptureOptions* GetOptions();
 
  private:
   ~VideoCaptureOptionsImpl() = default;
   void OnInitialized(webrtc::VideoCaptureOptions::Status status) override;
 
+  bool mInitialized;
+  bool mHasCamera;
   std::unique_ptr<webrtc::VideoCaptureOptions> mCaptureOptions;
   MozPromiseHolder<VideoCaptureOptionsInitPromise> mPromiseHolder;
 };
 
 }  // namespace mozilla
 
-#endif  // WEBRTC_MODULES_VIDEO_CAPTURE_PIPEWIRE_CAMERA_IMPL_H_
+#endif  // WEBRTC_MODULES_VIDEO_CAPTURE_IMPL_H_

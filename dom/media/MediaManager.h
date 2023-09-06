@@ -86,7 +86,8 @@ class MediaDevice final {
   MediaDevice(MediaEngine* aEngine, dom::MediaSourceEnum aMediaSource,
               const nsString& aRawName, const nsString& aRawID,
               const nsString& aRawGroupID, IsScary aIsScary,
-              const OsPromptable canRequestOsLevelPrompt);
+              const OsPromptable canRequestOsLevelPrompt,
+              const bool aIsPlaceholder = false);
 
   MediaDevice(MediaEngine* aEngine,
               const RefPtr<AudioDeviceInfo>& aAudioDeviceInfo,
@@ -108,6 +109,7 @@ class MediaDevice final {
   const bool mScary;
   const bool mCanRequestOsLevelPrompt;
   const bool mIsFake;
+  const bool mIsPlaceholder;
   const nsString mType;
   const nsString mRawID;
   const nsString mRawGroupID;

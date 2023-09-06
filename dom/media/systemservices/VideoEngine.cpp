@@ -49,8 +49,7 @@ int VideoEngine::SetAndroidObjects() {
 }
 #endif
 
-int32_t VideoEngine::CreateVideoCapture(const char* aDeviceUniqueIdUTF8,
-                                        webrtc::VideoCaptureOptions* aOptions) {
+int32_t VideoEngine::CreateVideoCapture(const char* aDeviceUniqueIdUTF8) {
   LOG(("%s", __PRETTY_FUNCTION__));
   MOZ_ASSERT(aDeviceUniqueIdUTF8);
 
@@ -70,9 +69,9 @@ int32_t VideoEngine::CreateVideoCapture(const char* aDeviceUniqueIdUTF8,
   CaptureEntry entry = {-1, nullptr};
 
   if (mCaptureDevInfo.type == CaptureDeviceType::Camera) {
-    if (aOptions) {
+    if (mOptions) {
       entry = CaptureEntry(id, webrtc::VideoCaptureFactory::Create(
-                                   aOptions, aDeviceUniqueIdUTF8));
+                                   mOptions, aDeviceUniqueIdUTF8));
     } else {
       entry = CaptureEntry(
           id, webrtc::VideoCaptureFactory::Create(aDeviceUniqueIdUTF8));
@@ -132,8 +131,7 @@ int VideoEngine::ReleaseVideoCapture(const int32_t aId) {
 }
 
 std::shared_ptr<webrtc::VideoCaptureModule::DeviceInfo>
-VideoEngine::GetOrCreateVideoCaptureDeviceInfo(
-    webrtc::VideoCaptureOptions* aOptions) {
+VideoEngine::GetOrCreateVideoCaptureDeviceInfo() {
   LOG(("%s", __PRETTY_FUNCTION__));
   webrtc::Timestamp currentTime = webrtc::Timestamp::Micros(0);
 
@@ -174,9 +172,9 @@ VideoEngine::GetOrCreateVideoCaptureDeviceInfo(
         break;
       }
 #endif
-      if (aOptions) {
+      if (mOptions) {
         mDeviceInfo.reset(
-            webrtc::VideoCaptureFactory::CreateDeviceInfo(aOptions));
+            webrtc::VideoCaptureFactory::CreateDeviceInfo(mOptions));
       } else {
         mDeviceInfo.reset(webrtc::VideoCaptureFactory::CreateDeviceInfo());
       }
@@ -206,9 +204,10 @@ VideoEngine::GetOrCreateVideoCaptureDeviceInfo(
 }
 
 already_AddRefed<VideoEngine> VideoEngine::Create(
-    const CaptureDeviceType& aCaptureDeviceType) {
+    const CaptureDeviceType& aCaptureDeviceType,
+    webrtc::VideoCaptureOptions* aOptions) {
   LOG(("%s", __PRETTY_FUNCTION__));
-  return do_AddRef(new VideoEngine(aCaptureDeviceType));
+  return do_AddRef(new VideoEngine(aCaptureDeviceType, aOptions));
 }
 
 VideoEngine::CaptureEntry::CaptureEntry(
@@ -249,8 +248,12 @@ int32_t VideoEngine::GenerateId() {
   return mId = sId++;
 }
 
-VideoEngine::VideoEngine(const CaptureDeviceType& aCaptureDeviceType)
-    : mId(0), mCaptureDevInfo(aCaptureDeviceType), mDeviceInfo(nullptr) {
+VideoEngine::VideoEngine(const CaptureDeviceType& aCaptureDeviceType,
+                         webrtc::VideoCaptureOptions* aOptions)
+    : mId(0),
+      mCaptureDevInfo(aCaptureDeviceType),
+      mOptions(aOptions),
+      mDeviceInfo(nullptr) {
   LOG(("%s", __PRETTY_FUNCTION__));
   LOG(("Creating new VideoEngine with CaptureDeviceType %s",
        mCaptureDevInfo.TypeName()));

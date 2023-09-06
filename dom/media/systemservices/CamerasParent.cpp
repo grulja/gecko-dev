@@ -34,9 +34,7 @@
 #include "api/video/video_frame_buffer.h"
 #include "common_video/libyuv/include/webrtc_libyuv.h"
 
-#if defined(WEBRTC_USE_PIPEWIRE)
-#  include "video_engine/pipewire_camera_impl.h"
-#endif
+#include "video_engine/video_capture_impl.h"
 
 #if defined(_WIN32)
 #  include <process.h>
@@ -121,7 +119,13 @@ static StaticRefPtr<nsIThread> sVideoCaptureThread;
 // using the file descriptor we received from camera portal request. Set
 // initially by IPC background thread only and later accessed by video capture
 // thread only. Outlives the CamerasParent instances.
-static StaticAutoPtr<webrtc::VideoCaptureOptions> sVideoCaptureOptions;
+static StaticRefPtr<VideoCaptureOptionsImpl> sVideoCaptureOptions;
+
+static void EnsureVideoCaptureOptionsInitialized() {
+  if (!sVideoCaptureOptions) {
+    sVideoCaptureOptions = MakeRefPtr<VideoCaptureOptionsImpl>();
+  }
+}
 
 static already_AddRefed<nsISerialEventTarget>
 MakeAndAddRefVideoCaptureThreadAndSingletons() {
@@ -147,6 +151,8 @@ MakeAndAddRefVideoCaptureThreadAndSingletons() {
 
     sEngines = MakeRefPtr<VideoEngineArray>();
     sEngines->AppendElements(CaptureEngine::MaxEngine);
+
+    EnsureVideoCaptureOptionsInitialized();
   }
 
   ++sNumCamerasParents;
@@ -385,8 +391,7 @@ void CamerasParent::CloseEngines() {
   }
 
   if (VideoEngine* engine = mEngines->ElementAt(CameraEngine); engine) {
-    auto device_info =
-        engine->GetOrCreateVideoCaptureDeviceInfo(sVideoCaptureOptions.get());
+    auto device_info = engine->GetOrCreateVideoCaptureDeviceInfo();
     MOZ_ASSERT(device_info);
     if (device_info) {
       device_info->DeRegisterVideoInputFeedBack(this);
@@ -400,6 +405,10 @@ VideoEngine* CamerasParent::EnsureInitialized(int aEngine) {
   CaptureEngine capEngine = static_cast<CaptureEngine>(aEngine);
 
   if (VideoEngine* engine = mEngines->ElementAt(capEngine); engine) {
+    // There is no point using CameraEngine with unitialized options
+    if (capEngine == CameraEngine && !sVideoCaptureOptions->IsInitialized()) {
+      return nullptr;
+    }
     return engine;
   }
 
@@ -422,15 +431,15 @@ VideoEngine* CamerasParent::EnsureInitialized(int aEngine) {
       return nullptr;
   }
 
-  RefPtr<VideoEngine> engine = VideoEngine::Create(captureDeviceType);
+  RefPtr<VideoEngine> engine = VideoEngine::Create(
+      captureDeviceType, sVideoCaptureOptions->GetOptions());
   if (!engine) {
     LOG("VideoEngine::Create failed");
     return nullptr;
   }
 
-  if (capEngine == CameraEngine) {
-    auto device_info =
-        engine->GetOrCreateVideoCaptureDeviceInfo(sVideoCaptureOptions.get());
+  if (capEngine == CameraEngine && sVideoCaptureOptions->IsInitialized()) {
+    auto device_info = engine->GetOrCreateVideoCaptureDeviceInfo();
     MOZ_ASSERT(device_info);
     if (device_info) {
       device_info->RegisterVideoInputFeedBack(this);
@@ -454,18 +463,26 @@ ipc::IPCResult CamerasParent::RecvNumberOfCaptureDevices(
   LOG("CaptureEngine=%d", aCapEngine);
 
   using Promise = MozPromise<int, bool, true>;
-  InvokeAsync(mVideoCaptureThread, __func__,
-              [this, self = RefPtr(this), aCapEngine] {
-                int num = -1;
-                if (auto* engine = EnsureInitialized(aCapEngine)) {
-                  if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo(
-                          sVideoCaptureOptions.get())) {
-                    num = static_cast<int>(devInfo->NumberOfDevices());
-                  }
-                }
-                return Promise::CreateAndResolve(
-                    num, "CamerasParent::RecvNumberOfCaptureDevices");
-              })
+  InvokeAsync(
+      mVideoCaptureThread, __func__,
+      [this, self = RefPtr(this), aCapEngine] {
+        int num = -1;
+        if (auto* engine = EnsureInitialized(aCapEngine)) {
+          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo()) {
+            num = static_cast<int>(devInfo->NumberOfDevices());
+          }
+        }
+
+#if defined(WEBRTC_USE_PIPEWIRE)
+        // Fallback to check existence of camera device through CameraPortal
+        if (num == -1 && mozilla::StaticPrefs::
+                             media_webrtc_camera_allow_pipewire_AtStartup()) {
+          num = sVideoCaptureOptions->HasCamera();
+        }
+#endif
+        return Promise::CreateAndResolve(
+            num, "CamerasParent::RecvNumberOfCaptureDevices");
+      })
       ->Then(
           mPBackgroundEventTarget, __func__,
           [this, self = RefPtr(this)](Promise::ResolveOrRejectValue&& aValue) {
@@ -538,8 +555,7 @@ ipc::IPCResult CamerasParent::RecvNumberOfCapabilities(
       [this, self = RefPtr(this), id = nsCString(aUniqueId), aCapEngine]() {
         int num = -1;
         if (auto* engine = EnsureInitialized(aCapEngine)) {
-          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo(
-                  sVideoCaptureOptions.get())) {
+          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo()) {
             num = devInfo->NumberOfCapabilities(id.get());
           }
         }
@@ -586,8 +602,7 @@ ipc::IPCResult CamerasParent::RecvGetCaptureCapability(
         webrtc::VideoCaptureCapability webrtcCaps;
         int error = -1;
         if (auto* engine = EnsureInitialized(aCapEngine)) {
-          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo(
-                  sVideoCaptureOptions.get())) {
+          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo()) {
             error = devInfo->GetCapability(id.get(), aIndex, webrtcCaps);
           }
         }
@@ -645,32 +660,43 @@ ipc::IPCResult CamerasParent::RecvGetCaptureDevice(
 
   using Data = std::tuple<nsCString, nsCString, pid_t, int>;
   using Promise = MozPromise<Data, bool, true>;
-  InvokeAsync(mVideoCaptureThread, __func__,
-              [this, self = RefPtr(this), aCapEngine, aDeviceIndex] {
-                char deviceName[MediaEngineSource::kMaxDeviceNameLength];
-                char deviceUniqueId[MediaEngineSource::kMaxUniqueIdLength];
-                nsCString name;
-                nsCString uniqueId;
-                pid_t devicePid = 0;
-                int error = -1;
-                if (auto* engine = EnsureInitialized(aCapEngine)) {
-                  if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo(
-                          sVideoCaptureOptions.get())) {
-                    error = devInfo->GetDeviceName(
-                        aDeviceIndex, deviceName, sizeof(deviceName),
-                        deviceUniqueId, sizeof(deviceUniqueId), nullptr, 0,
-                        &devicePid);
-                  }
-                }
-                if (error == 0) {
-                  name.Assign(deviceName);
-                  uniqueId.Assign(deviceUniqueId);
-                }
-                return Promise::CreateAndResolve(
-                    std::make_tuple(std::move(name), std::move(uniqueId),
-                                    devicePid, error),
-                    "CamerasParent::RecvGetCaptureDevice");
-              })
+  InvokeAsync(
+      mVideoCaptureThread, __func__,
+      [this, self = RefPtr(this), aCapEngine, aDeviceIndex] {
+        char deviceName[MediaEngineSource::kMaxDeviceNameLength];
+        char deviceUniqueId[MediaEngineSource::kMaxUniqueIdLength];
+        nsCString name;
+        nsCString uniqueId;
+        pid_t devicePid = 0;
+        int error = -1;
+        if (auto* engine = EnsureInitialized(aCapEngine)) {
+          if (auto devInfo = engine->GetOrCreateVideoCaptureDeviceInfo()) {
+            error = devInfo->GetDeviceName(
+                aDeviceIndex, deviceName, sizeof(deviceName), deviceUniqueId,
+                sizeof(deviceUniqueId), nullptr, 0, &devicePid);
+          }
+        }
+        if (error == 0) {
+          name.Assign(deviceName);
+          uniqueId.Assign(deviceUniqueId);
+        }
+#if defined(WEBRTC_USE_PIPEWIRE)
+        else if (mozilla::StaticPrefs::
+                     media_webrtc_camera_allow_pipewire_AtStartup()) {
+          // Fallback to add a camera placeholder when there is camera device
+          // and we are using PipeWire
+          if (sVideoCaptureOptions->HasCamera()) {
+            error = 0;
+            name.Assign("Default Video Device");
+            uniqueId.Assign("placeholder");
+          }
+        }
+#endif
+        return Promise::CreateAndResolve(
+            std::make_tuple(std::move(name), std::move(uniqueId), devicePid,
+                            error),
+            "CamerasParent::RecvGetCaptureDevice");
+      })
       ->Then(
           mPBackgroundEventTarget, __func__,
           [this, self = RefPtr(this)](Promise::ResolveOrRejectValue&& aValue) {
@@ -685,10 +711,12 @@ ipc::IPCResult CamerasParent::RecvGetCaptureDevice(
               return;
             }
             bool scary = (devicePid == getpid());
+            bool placeholder = (uniqueId == "placeholder");
 
             LOG("Returning %s name %s id (pid = %d)%s", name.get(),
                 uniqueId.get(), devicePid, (scary ? " (scary)" : ""));
-            Unused << SendReplyGetCaptureDevice(name, uniqueId, scary);
+            Unused << SendReplyGetCaptureDevice(name, uniqueId, scary,
+                                                placeholder);
           });
   return IPC_OK();
 }
@@ -793,8 +821,7 @@ ipc::IPCResult CamerasParent::RecvAllocateCapture(
                int error = -1;
                if (allowed && EnsureInitialized(aCapEngine)) {
                  VideoEngine* engine = mEngines->ElementAt(aCapEngine);
-                 captureId = engine->CreateVideoCapture(
-                     unique_id.get(), sVideoCaptureOptions.get());
+                 captureId = engine->CreateVideoCapture(unique_id.get());
                  engine->WithEntry(captureId,
                                    [&error](VideoEngine::CaptureEntry& cap) {
                                      if (cap.VideoCapture()) {
@@ -1192,14 +1219,18 @@ auto CamerasParent::RequestCameraAccess()
 #if defined(WEBRTC_USE_PIPEWIRE)
   static StaticRefPtr<CameraAccessRequestPromise> sCameraAccessRequestPromise;
   if (!sCameraAccessRequestPromise) {
-    auto options = MakeRefPtr<VideoCaptureOptionsImpl>();
+    // Ensure VideoCaptureOptions is initialized, which might be when
+    // CamerasParent is not initialized yet
+    EnsureVideoCaptureOptionsInitialized();
     auto portal = MakeRefPtr<CameraPortalImpl>();
     sCameraAccessRequestPromise = RefPtr<CameraAccessRequestPromise>(
         portal->Start()
             ->Then(
                 GetCurrentSerialEventTarget(),
                 "CamerasParent::RequestCameraAccess portal handler",
-                [options, portal](int aFD) { return options->Init(aFD); },
+                [portal](int aFD) {
+                  return sVideoCaptureOptions->InitPipeWire(aFD);
+                },
                 [](nsresult aRv) {
                   return VideoCaptureOptionsImpl::
                       VideoCaptureOptionsInitPromise::CreateAndReject(
@@ -1209,13 +1240,8 @@ auto CamerasParent::RequestCameraAccess()
             ->Then(
                 GetCurrentSerialEventTarget(),
                 "CamerasParent::RequestCameraAccess options init handler",
-                [options](nsresult aRv) {
+                [](nsresult aRv) {
                   MOZ_ASSERT(NS_SUCCEEDED(aRv));
-                  MOZ_ASSERT(!sVideoCaptureOptions);
-                  sVideoCaptureOptions = options->ReleaseOptions().release();
-                  NS_DispatchToMainThread(NS_NewRunnableFunction(
-                      "CamerasParent::RequestCameraAccess",
-                      []() { ClearOnShutdown(&sVideoCaptureOptions); }));
                   return CameraAccessRequestPromise::CreateAndResolve(
                       aRv,
                       "CamerasParent::RequestCameraAccess options init "

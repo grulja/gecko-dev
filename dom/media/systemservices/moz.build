@@ -54,12 +54,10 @@ if CONFIG["MOZ_WEBRTC"]:
             "video_engine/desktop_capture_impl.cc",
             "video_engine/desktop_device_info.cc",
             "video_engine/tab_capturer.cc",
+            "video_engine/video_capture_impl.cc",
         ]
-
-    if "WEBRTC_USE_PIPEWIRE" in DEFINES:
-        UNIFIED_SOURCES += [
-            "video_engine/pipewire_camera_impl.cc",
-        ]
+        CXXFLAGS += CONFIG["MOZ_DBUS_GLIB_CFLAGS"]
+        CXXFLAGS += CONFIG["MOZ_GTK3_CFLAGS"]
 
 if CONFIG["OS_TARGET"] == "Android":
     DEFINES["WEBRTC_ANDROID"] = True
