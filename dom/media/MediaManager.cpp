@@ -1938,9 +1938,9 @@ RefPtr<DeviceSetPromise> MediaManager::EnumerateRawDevices(
 
   deviceAccessPromise->Then(
       mMediaThread, __func__,
-      [holder = std::move(holder), aVideoInputType, aAudioInputType,
-       hasFakeCams, hasFakeMics, videoLoopDev, audioLoopDev, hasVideo, hasAudio,
-       hasAudioOutput, realDeviceRequested](
+      [this, self = RefPtr(this), holder = std::move(holder), aFlags,
+       aVideoInputType, aAudioInputType, hasFakeCams, hasFakeMics, videoLoopDev,
+       audioLoopDev, hasVideo, hasAudio, hasAudioOutput, realDeviceRequested](
           NativePromise::ResolveOrRejectValue&& aValue) mutable {
         if (aValue.IsReject()) {
           // IPC failure probably means we're in shutdown. Resolve with
@@ -1963,6 +1963,10 @@ RefPtr<DeviceSetPromise> MediaManager::EnumerateRawDevices(
               MakeRefPtr<MediaMgrError>(MediaMgrError::Name::NotAllowedError),
               "EnumerateRawDevices: camera access rejected");
           return;
+        }
+
+        if (aFlags.contains(EnumerationFlag::AllowPermissionRequest)) {
+          EnsureNoPlaceholdersInDeviceCache();
         }
 
         // Only enumerate what's asked for, and only fake cams and mics.
@@ -2365,6 +2369,18 @@ void MediaManager::DeviceListChanged() {
             HandleDeviceListChanged();
           },
           [] { /* Timer was canceled by us, or we're in shutdown. */ });
+}
+
+void MediaManager::EnsureNoPlaceholdersInDeviceCache() {
+  if (mPhysicalDevices) {
+    // Invalidate the list if there is a placeholder
+    for (const auto& device : *mPhysicalDevices) {
+      if (device->mIsPlaceholder) {
+        InvalidateDeviceCache();
+        break;
+      }
+    }
+  }
 }
 
 void MediaManager::InvalidateDeviceCache() {
