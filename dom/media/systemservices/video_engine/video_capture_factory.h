@@ -25,6 +25,8 @@ class VideoCaptureFactory : webrtc::VideoCaptureOptions::Callback {
  public:
   NS_INLINE_DECL_REFCOUNTING(VideoCaptureFactory);
 
+  enum CameraAvailability { Unknown, Available, NotAvailable };
+
   VideoCaptureFactory();
 
   std::shared_ptr<webrtc::VideoCaptureModule::DeviceInfo> CreateDeviceInfo(
@@ -48,6 +50,13 @@ class VideoCaptureFactory : webrtc::VideoCaptureOptions::Callback {
    */
   RefPtr<CameraBackendInitPromise> InitCameraBackend();
 
+  /**
+   * Updates information about camera availability
+   */
+  using UpdateCameraAvailabilityPromise =
+      MozPromise<CameraAvailability, nsresult, true>;
+  RefPtr<UpdateCameraAvailabilityPromise> UpdateCameraAvailability();
+
  private:
   ~VideoCaptureFactory() = default;
   // aka OnCameraBackendInitialized
@@ -63,10 +72,11 @@ class VideoCaptureFactory : webrtc::VideoCaptureOptions::Callback {
    *  2) NS_ERROR_NO_INTERFACE - the camera portal is not available
    *  3) NS_ERROR_UNEXPECTED - the camera portal returned wrong value
    */
-  using HasCameraDevicePromise = MozPromise<bool, nsresult, true>;
+  using HasCameraDevicePromise = MozPromise<CameraAvailability, nsresult, true>;
   RefPtr<HasCameraDevicePromise> HasCameraDevice();
 
-  bool mCameraBackendInitialized;
+  bool mCameraBackendInitialized = false;
+  CameraAvailability mCameraAvailability = Unknown;
   std::unique_ptr<webrtc::VideoCaptureOptions> mVideoCaptureOptions;
   MozPromiseHolder<CameraBackendInitPromise> mPromiseHolder;
   RefPtr<CameraBackendInitPromise> mPromise;
